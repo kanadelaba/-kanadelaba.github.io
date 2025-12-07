@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>手機鏡頭 AI 即時分析</title>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+
+    <style>
+        body {
+            font-family: 'Arial', sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f0f2f5;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        h2 {
+            position: absolute;
+            top: 10px;
+            z-index: 10;
+            background: rgba(255, 255, 255, 0.8);
+            padding: 5px 15px;
+            border-radius: 20px;
+            margin: 0;
+        }
+
+        #status {
+            position: absolute;
+            top: 50px;
+            z-index: 10;
+            color: white;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 5px 10px;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+
+        /* 視訊容器，用於重疊 Video 和 Canvas */
+        .cam-container {
+            position: relative;
+            width: 100%;
+            max-width: 640px;
+            height: auto;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+        }
+
+        video {
+            display: block;
+            width: 100%;
+            height: auto;
+            /* 鏡像翻轉 (如果是前鏡頭需要，後鏡頭通常不需要) */
+            /* transform: scaleX(-1); */ 
+        }
+
+        canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 5;
+        }
+
+        button {
+            position: absolute;
+            bottom: 30px;
+            z-index: 10;
+            padding: 12px 24px;
+            font-size: 16px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 30px;
+            cursor: pointer;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.2);
+        }
+        
+        button:disabled {
+            background-color: #ccc;
+        }
+    </style>
+</head>
+<body>
+
+    <h2>AI 鏡頭分析</h2>
+    <div id="status">等待啟動...</div>
+
+    <div class="cam-container">
+        <video id="webcam" playsinline muted autoplay></video>
+        <canvas id="canvas"></canvas>
+    </div>
+
+    <button id="startBtn" onclick="startApp()">開啟相機並分析</button>
+
+    <script>
+        const video = document.getElementById('webcam');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const statusDiv = document.getElementById('status');
+        const startBtn = document.getElementById('startBtn');
+        
+        let model = undefined;
+
+        // 1. 啟動應用程式主入口
+        async function startApp() {
+            startBtn.disabled = true;
+            statusDiv.innerText = "載入 AI 模型中... (首次需幾秒)";
+            
+            try {
+                // 載入 COCO-SSD 模型
+                model = await cocoSsd.load();
+                statusDiv.innerText = "模型載入完成，正在請求相機權限...";
+                
+                // 啟動相機
+                await setupCamera();
+                
+                // 開始預測
+                video.play();
+                statusDiv.innerText = "正在分析畫面...";
+                startBtn.style.display = 'none'; // 隱藏按鈕
+                predictLoop();
+
+            } catch (err) {
+                console.error(err);
+                statusDiv.innerText = "錯誤: " + err.message;
+                startBtn.disabled = false;
+            }
+        }
+
+        // 2. 設定相機 (請求後置鏡頭)
+        async function setupCamera() {
+            const stream = await navigator.mediaDevices.getUserMedia({
+                audio: false,
+                video: {
+                    facingMode: 'environment', // 'user' 為前鏡頭, 'environment' 為後鏡頭
+                    width: { ideal: 640 },
+                    height: { ideal: 480 }
+                }
+            });
+            
+            video.srcObject = stream;
+            
+            return new Promise((resolve) => {
+                video.onloadedmetadata = () => {
+                    resolve(video);
+                };
+            });
+        }
+
+        // 3. 預測循環
+        function predictLoop() {
+            // 設定 Canvas 大小與 Video 一致
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+
+            // 執行偵測
+            model.detect(video).then(predictions => {
+                // 清除上一幀的繪圖
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                
+                // 繪製新的偵測結果
+                renderPredictions(predictions);
+                
+                // 使用 requestAnimationFrame 進行下一幀預測
+                requestAnimationFrame(predictLoop);
+            });
+        }
+
+        // 4. 繪製框線與標籤
+        function renderPredictions(predictions) {
+            ctx.font = '16px Arial';
+            ctx.textBaseline = 'top';
+
+            predictions.forEach(prediction => {
+                const x = prediction.bbox[0];
+                const y = prediction.bbox[1];
+                const width = prediction.bbox[2];
+                const height = prediction.bbox[3];
+
+                // 畫框框
+                ctx.strokeStyle = '#00FFFF';
+                ctx.lineWidth = 4;
+                ctx.strokeRect(x, y, width, height);
+
+                // 畫背景色塊 (文字底圖)
+                ctx.fillStyle = '#00FFFF';
+                const textWidth = ctx.measureText(prediction.class).width;
+                ctx.fillRect(x, y, textWidth + 10, 25);
+
+                // 畫文字
+                ctx.fillStyle = '#000000';
+                ctx.fillText(prediction.class + ` (${Math.round(prediction.score * 100)}%)`, x + 5, y + 5);
+            });
+        }
+    </script>
+</body>
+</html>

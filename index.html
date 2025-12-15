@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>手機鏡頭 AI 即時分析</title>
+    <title>手機鏡頭 AI 即時分析 (含鏡頭選擇)</title>
     
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
@@ -13,7 +13,7 @@
             font-family: 'Arial', sans-serif;
             margin: 0;
             padding: 0;
-            background-color: #f0f2f5;
+            background-color: #222;
             display: flex;
             flex-direction: column;
             align-items: center;
@@ -22,28 +22,38 @@
             overflow: hidden;
         }
 
-        h2 {
-            position: absolute;
-            top: 10px;
-            z-index: 10;
-            background: rgba(255, 255, 255, 0.8);
-            padding: 5px 15px;
-            border-radius: 20px;
-            margin: 0;
-        }
-
+        /* 狀態列 */
         #status {
             position: absolute;
-            top: 50px;
-            z-index: 10;
-            color: white;
+            top: 20px;
+            z-index: 20;
+            color: #00ffcc;
             background: rgba(0, 0, 0, 0.7);
-            padding: 5px 10px;
-            border-radius: 5px;
+            padding: 8px 15px;
+            border-radius: 20px;
             font-size: 14px;
+            pointer-events: none; /* 讓點擊穿透 */
         }
 
-        /* 視訊容器，用於重疊 Video 和 Canvas */
+        /* 鏡頭選擇選單容器 */
+        #selectContainer {
+            position: absolute;
+            top: 70px; /* 放在狀態列下方 */
+            z-index: 20;
+            display: none; /* 一開始隱藏，等有權限再顯示 */
+        }
+
+        select {
+            padding: 8px 15px;
+            border-radius: 20px;
+            border: none;
+            background: rgba(255, 255, 255, 0.9);
+            font-size: 14px;
+            outline: none;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+
+        /* 視訊容器 */
         .cam-container {
             position: relative;
             width: 100%;
@@ -52,14 +62,13 @@
             overflow: hidden;
             display: flex;
             justify-content: center;
+            background: #000;
         }
 
         video {
             display: block;
             width: 100%;
             height: auto;
-            /* 鏡像翻轉 (如果是前鏡頭需要，後鏡頭通常不需要) */
-            /* transform: scaleX(-1); */ 
         }
 
         canvas {
@@ -71,27 +80,32 @@
 
         button {
             position: absolute;
-            bottom: 30px;
-            z-index: 10;
-            padding: 12px 24px;
-            font-size: 16px;
+            bottom: 40px;
+            z-index: 30;
+            padding: 15px 30px;
+            font-size: 18px;
             background-color: #007bff;
             color: white;
             border: none;
-            border-radius: 30px;
+            border-radius: 50px;
             cursor: pointer;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.2);
+            box-shadow: 0 4px 10px rgba(0,0,0,0.5);
+            transition: background 0.3s;
         }
         
         button:disabled {
-            background-color: #ccc;
+            background-color: #555;
+            color: #aaa;
         }
     </style>
 </head>
 <body>
 
-    <h2>AI 鏡頭分析</h2>
     <div id="status">等待啟動...</div>
+
+    <div id="selectContainer">
+        <select id="cameraSelect" onchange="changeCamera()"></select>
+    </div>
 
     <div class="cam-container">
         <video id="webcam" playsinline muted autoplay></video>
@@ -106,8 +120,12 @@
         const ctx = canvas.getContext('2d');
         const statusDiv = document.getElementById('status');
         const startBtn = document.getElementById('startBtn');
+        const selectContainer = document.getElementById('selectContainer');
+        const cameraSelect = document.getElementById('cameraSelect');
         
         let model = undefined;
+        let currentStream = null;
+        let isPredicting = false;
 
         // 1. 啟動應用程式主入口
         async function startApp() {
@@ -119,33 +137,54 @@
                 model = await cocoSsd.load();
                 statusDiv.innerText = "模型載入完成，正在請求相機權限...";
                 
-                // 啟動相機
+                // 初次啟動 (預設後鏡頭)
                 await setupCamera();
+                
+                // 權限拿到後，列出所有鏡頭並填入選單
+                await populateCameraList();
+                
+                // 顯示選單與隱藏按鈕
+                selectContainer.style.display = 'block';
+                startBtn.style.display = 'none';
                 
                 // 開始預測
                 video.play();
                 statusDiv.innerText = "正在分析畫面...";
-                startBtn.style.display = 'none'; // 隱藏按鈕
-                predictLoop();
+                
+                if (!isPredicting) {
+                    isPredicting = true;
+                    predictLoop();
+                }
 
             } catch (err) {
                 console.error(err);
                 statusDiv.innerText = "錯誤: " + err.message;
                 startBtn.disabled = false;
+                startBtn.innerText = "重試";
             }
         }
 
-        // 2. 設定相機 (請求後置鏡頭)
-        async function setupCamera() {
-            const stream = await navigator.mediaDevices.getUserMedia({
+        // 2. 設定/切換相機的核心函式
+        async function setupCamera(deviceId = null) {
+            // 如果已經有串流在跑，先停止它
+            if (currentStream) {
+                currentStream.getTracks().forEach(track => track.stop());
+            }
+
+            // 設定參數
+            const constraints = {
                 audio: false,
                 video: {
-                    facingMode: 'environment', // 'user' 為前鏡頭, 'environment' 為後鏡頭
+                    // 如果有指定 ID 就用 ID，沒有就預設 'environment' (後鏡頭)
+                    deviceId: deviceId ? { exact: deviceId } : undefined,
+                    facingMode: deviceId ? undefined : 'environment',
                     width: { ideal: 640 },
                     height: { ideal: 480 }
                 }
-            });
-            
+            };
+
+            const stream = await navigator.mediaDevices.getUserMedia(constraints);
+            currentStream = stream;
             video.srcObject = stream;
             
             return new Promise((resolve) => {
@@ -154,27 +193,84 @@
                 };
             });
         }
-        
-    // 3. 預測循環
-        function predictLoop() {
-            // 設定 Canvas 大小與 Video 一致
-            canvas.width = video.videoWidth;
-            canvas.height = video.videoHeight;
 
-            // 執行偵測
-            model.detect(video).then(predictions => {
-                // 清除上一幀的繪圖
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
+        // 3. 列出所有鏡頭並製作選單
+        async function populateCameraList() {
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            const videoDevices = devices.filter(device => device.kind === 'videoinput');
+
+            cameraSelect.innerHTML = ""; // 清空
+
+            videoDevices.forEach((device, index) => {
+                const option = document.createElement('option');
+                option.value = device.deviceId;
                 
-                // 繪製新的偵測結果
-                renderPredictions(predictions);
+                // 美化名稱
+                const label = device.label || `攝影機 ${index + 1}`;
+                let displayText = label;
                 
-                // 使用 requestAnimationFrame 進行下一幀預測
-                requestAnimationFrame(predictLoop);
+                if (label.toLowerCase().includes('back') || label.includes('後')) {
+                    displayText = `📷 後置：${label}`;
+                } else if (label.toLowerCase().includes('front') || label.includes('前')) {
+                    displayText = `👤 前置：${label}`;
+                } else if (label.toLowerCase().includes('usb')) {
+                    displayText = `🔌 外接：${label}`;
+                }
+
+                option.text = displayText;
+                cameraSelect.appendChild(option);
             });
+
+            // 嘗試將選單選中當前使用的鏡頭 (如果是第一次，通常是後鏡頭)
+            const currentTrack = currentStream.getVideoTracks()[0];
+            const currentDeviceId = currentTrack.getSettings().deviceId;
+            if (currentDeviceId) {
+                cameraSelect.value = currentDeviceId;
+            }
         }
 
-        // 4. 繪製框線與標籤
+        // 4. 使用者切換選單時觸發
+        async function changeCamera() {
+            const deviceId = cameraSelect.value;
+            statusDiv.innerText = "切換鏡頭中...";
+            
+            try {
+                await setupCamera(deviceId);
+                video.play();
+                statusDiv.innerText = "鏡頭已切換，繼續分析";
+            } catch (err) {
+                console.error(err);
+                statusDiv.innerText = "切換失敗: " + err.message;
+            }
+        }
+
+        // 5. 預測循環
+        function predictLoop() {
+            // 確保影片有在播放且寬度大於0才執行
+            if (video.readyState === video.HAVE_ENOUGH_DATA) {
+                
+                // 設定 Canvas 大小與 Video 一致
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+
+                // 執行偵測
+                model.detect(video).then(predictions => {
+                    // 清除上一幀的繪圖
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+                    
+                    // 繪製新的偵測結果
+                    renderPredictions(predictions);
+                    
+                    // 下一幀
+                    requestAnimationFrame(predictLoop);
+                });
+            } else {
+                // 如果影片還沒準備好，稍等一下再試
+                requestAnimationFrame(predictLoop);
+            }
+        }
+
+        // 6. 繪製框線與標籤
         function renderPredictions(predictions) {
             ctx.font = '16px Arial';
             ctx.textBaseline = 'top';

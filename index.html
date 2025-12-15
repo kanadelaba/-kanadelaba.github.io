@@ -87,83 +87,122 @@
             background-color: #ccc;
         }
     </style>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>全鏡頭選擇器</title>
+    <style>
+        body { font-family: sans-serif; background: #222; color: white; text-align: center; padding: 20px; }
+        select { padding: 10px; font-size: 16px; margin-bottom: 20px; width: 90%; max-width: 400px; }
+        video { width: 100%; max-width: 640px; background: black; border: 2px solid #00ffcc; }
+        #status { color: #aaa; margin-top: 10px; }
+    </style>
 </head>
 <body>
-    <h2>外置鏡頭 AI 分析</h2>
-    
-    <div style="margin: 10px;">
-        <label>選擇攝影機：</label>
-        <select id="cameraSelect" onchange="startCamera()"></select>
-    </div>
 
-    <div style="position: relative;">
-        <video id="webcam" playsinline muted autoplay width="640" height="480"></video>
-        </div>
-    
-    <div id="status">正在搜尋裝置...</div>
+    <h2>外置鏡頭 AI 分析</h2>
+
+    <label for="camSelect">選擇影像來源：</label><br>
+    <select id="camSelect"></select>
+
+    <br>
+    <video id="video" playsinline autoplay></video>
+    <div id="status">正在初始化...</div>
 
     <script>
-        const video = document.getElementById('webcam');
-        const cameraSelect = document.getElementById('cameraSelect');
-        const statusDiv = document.getElementById('status');
-        let currentStream;
+        const video = document.getElementById('video');
+        const select = document.getElementById('camSelect');
+        const status = document.getElementById('status');
+        let currentStream = null;
 
-        // 頁面載入時，先列出所有鏡頭
-        window.onload = async () => {
-            await getCameras();
-            startCamera(); // 預設啟動第一個
-        };
-
-        // 1. 取得所有攝影機列表
-        async function getCameras() {
+        async function init() {
             try {
-                // 先請求一次權限，不然 enumerateDevices 抓不到裝置名稱
-                await navigator.mediaDevices.getUserMedia({ video: true });
+                // 1. 重要！先請求一次權限
+                // 如果不先做這步，瀏覽器不會給你裝置的「名稱」(Label)，選單會變成空的或只顯示 "Camera 1"
+                status.innerText = "請求權限中...";
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true });
                 
-                const devices = await navigator.mediaDevices.enumerateDevices();
-                const videoDevices = devices.filter(device => device.kind === 'videoinput');
+                // 權限拿到後，先把這個暫時的串流關掉，免得佔用資源
+                stream.getTracks().forEach(track => track.stop());
 
-                cameraSelect.innerHTML = ""; // 清空選單
-                
-                videoDevices.forEach((device, index) => {
-                    const option = document.createElement('option');
-                    option.value = device.deviceId;
-                    // 如果裝置沒名稱，就叫 "攝影機 1", "攝影機 2"...
-                    option.text = device.label || `攝影機 ${index + 1}`;
-                    cameraSelect.appendChild(option);
-                });
+                // 2. 列出所有裝置
+                await listCameras();
 
-                statusDiv.innerText = `找到 ${videoDevices.length} 個鏡頭`;
+                // 3. 預設啟動選單裡的第一個鏡頭
+                if (select.options.length > 0) {
+                    startCamera(select.value);
+                } else {
+                    status.innerText = "找不到任何攝影機";
+                }
 
             } catch (err) {
                 console.error(err);
-                statusDiv.innerText = "無法取得攝影機列表: " + err.message;
+                status.innerText = "錯誤: " + err.message;
+                alert("請允許相機權限，否則無法偵測裝置");
             }
         }
 
-        // 2. 根據選單啟動特定鏡頭
-        async function startCamera() {
-            // 如果原本有在跑，先停止，不然會衝突
+        async function listCameras() {
+            // 取得所有裝置列表
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            
+            // 過濾出 "videoinput" (也就是攝影機)
+            const videoDevices = devices.filter(device => device.kind === 'videoinput');
+
+            select.innerHTML = ''; // 清空選單
+
+            videoDevices.forEach((device, index) => {
+                const option = document.createElement('option');
+                option.value = device.deviceId; // 這是啟動鏡頭需要的 ID
+                
+                // 顯示名稱邏輯：如果有內建名稱就用，沒有就自己編號
+                const label = device.label || `攝影機 ${index + 1}`;
+                
+                // 可以在這裡做個小判斷，標示它是哪種
+                // (注意：不是所有瀏覽器都會回傳 facingMode 資訊，主要靠 label 辨識)
+                let displayText = label;
+                if (label.toLowerCase().includes('back') || label.includes('後')) {
+                    displayText = `📷 後置：${label}`;
+                } else if (label.toLowerCase().includes('front') || label.includes('前')) {
+                    displayText = `👤 前置：${label}`;
+                } else if (label.toLowerCase().includes('usb')) {
+                    displayText = `🔌 外接：${label}`;
+                }
+
+                option.text = displayText;
+                select.appendChild(option);
+            });
+
+            status.innerText = `偵測到 ${videoDevices.length} 個裝置`;
+            
+            // 綁定選單變更事件
+            select.onchange = () => {
+                startCamera(select.value);
+            };
+        }
+
+        async function startCamera(deviceId) {
+            // 4. 切換前，務必先關閉舊的鏡頭！
             if (currentStream) {
                 currentStream.getTracks().forEach(track => track.stop());
             }
 
-            const deviceId = cameraSelect.value;
-            
-            // 設定參數：這次我們用 deviceId 來指定，而不是 facingMode
+            status.innerText = "切換鏡頭中...";
+
             const constraints = {
                 video: {
-                    deviceId: deviceId ? { exact: deviceId } : undefined,
-                    width: 640,
-                    height: 480
+                    // 這裡就是關鍵：指定 deviceId
+                    deviceId: { exact: deviceId },
+                    width: { ideal: 640 }, // 建議設定理想解析度，避免外接鏡頭跑太高解析度卡頓
+                    height: { ideal: 480 }
                 }
             };
 
             try {
-                const stream = await navigator.mediaDevices.getUserMedia(constraints);
-                currentStream = stream;
-                video.srcObject = stream;
-                statusDiv.innerText = "正在使用外置/選定鏡頭";
+                const newStream = await navigator.mediaDevices.getUserMedia(constraints);
+                currentStream = newStream;
+                video.srcObject = newStream;
+                status.innerText = "鏡頭運作中";
 
         // 3. 預測循環
         function predictLoop() {

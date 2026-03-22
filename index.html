@@ -3,10 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>手機鏡頭 AI 即時分析 (含鏡頭選擇)</title>
+    <title>手機鏡頭 AI 即時分析 (TFLite 版)</title>
     
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-tflite/dist/tf-tflite.min.js"></script>
 
     <style>
         body {
@@ -22,7 +22,6 @@
             overflow: hidden;
         }
 
-        /* 狀態列 */
         #status {
             position: absolute;
             top: 20px;
@@ -32,15 +31,14 @@
             padding: 8px 15px;
             border-radius: 20px;
             font-size: 14px;
-            pointer-events: none; /* 讓點擊穿透 */
+            pointer-events: none;
         }
 
-        /* 鏡頭選擇選單容器 */
         #selectContainer {
             position: absolute;
-            top: 70px; /* 放在狀態列下方 */
+            top: 70px;
             z-index: 20;
-            display: none; /* 一開始隱藏，等有權限再顯示 */
+            display: none;
         }
 
         select {
@@ -53,7 +51,6 @@
             box-shadow: 0 4px 6px rgba(0,0,0,0.3);
         }
 
-        /* 視訊容器 */
         .cam-container {
             position: relative;
             width: 100%;
@@ -112,7 +109,7 @@
         <canvas id="canvas"></canvas>
     </div>
 
-    <button id="startBtn" onclick="startApp()">開啟相機並分析</button>
+    <button id="startBtn" onclick="startApp()">開啟相機並分析 (TFLite)</button>
 
     <script>
         const video = document.getElementById('webcam');
@@ -123,59 +120,46 @@
         const selectContainer = document.getElementById('selectContainer');
         const cameraSelect = document.getElementById('cameraSelect');
         
-        let model = undefined;
+        let tfliteModel = null;
         let currentStream = null;
-        let isPredicting = false;
 
-        // 1. 啟動應用程式主入口
+        // 這裡設定你的模型路徑 (相對於 index.html)
+        const MODEL_PATH = './models/model.tflite';
+
         async function startApp() {
             startBtn.disabled = true;
-            statusDiv.innerText = "載入 AI 模型中... (首次需幾秒)";
+            statusDiv.innerText = "正在初始化 TFLite 模型...";
             
             try {
-                // 載入 COCO-SSD 模型
-                model = await cocoSsd.load();
-                statusDiv.innerText = "模型載入完成，正在請求相機權限...";
+                // 載入 TFLite 模型
+                tfliteModel = await tflite.loadTFLiteModel(MODEL_PATH);
+                statusDiv.innerText = "模型載入完成，正在請求相機...";
                 
-                // 初次啟動 (預設後鏡頭)
                 await setupCamera();
-                
-                // 權限拿到後，列出所有鏡頭並填入選單
                 await populateCameraList();
                 
-                // 顯示選單與隱藏按鈕
                 selectContainer.style.display = 'block';
                 startBtn.style.display = 'none';
                 
-                // 開始預測
                 video.play();
-                statusDiv.innerText = "正在分析畫面...";
-                
-                if (!isPredicting) {
-                    isPredicting = true;
-                    predictLoop();
-                }
+                statusDiv.innerText = "正在分析中...";
+                predictLoop();
 
             } catch (err) {
                 console.error(err);
-                statusDiv.innerText = "錯誤: " + err.message;
+                statusDiv.innerText = "載入失敗: " + err.message + " (請確認模型路徑是否正確)";
                 startBtn.disabled = false;
-                startBtn.innerText = "重試";
             }
         }
 
-        // 2. 設定/切換相機的核心函式
         async function setupCamera(deviceId = null) {
-            // 如果已經有串流在跑，先停止它
             if (currentStream) {
                 currentStream.getTracks().forEach(track => track.stop());
             }
 
-            // 設定參數
             const constraints = {
                 audio: false,
                 video: {
-                    // 如果有指定 ID 就用 ID，沒有就預設 'environment' (後鏡頭)
                     deviceId: deviceId ? { exact: deviceId } : undefined,
                     facingMode: deviceId ? undefined : 'environment',
                     width: { ideal: 640 },
@@ -188,113 +172,57 @@
             video.srcObject = stream;
             
             return new Promise((resolve) => {
-                video.onloadedmetadata = () => {
-                    resolve(video);
-                };
+                video.onloadedmetadata = () => resolve(video);
             });
         }
 
-        // 3. 列出所有鏡頭並製作選單
         async function populateCameraList() {
             const devices = await navigator.mediaDevices.enumerateDevices();
             const videoDevices = devices.filter(device => device.kind === 'videoinput');
-
-            cameraSelect.innerHTML = ""; // 清空
-
+            cameraSelect.innerHTML = "";
             videoDevices.forEach((device, index) => {
                 const option = document.createElement('option');
                 option.value = device.deviceId;
-                
-                // 美化名稱
                 const label = device.label || `攝影機 ${index + 1}`;
-                let displayText = label;
-                
-                if (label.toLowerCase().includes('back') || label.includes('後')) {
-                    displayText = `📷 後置：${label}`;
-                } else if (label.toLowerCase().includes('front') || label.includes('前')) {
-                    displayText = `👤 前置：${label}`;
-                } else if (label.toLowerCase().includes('usb')) {
-                    displayText = `🔌 外接：${label}`;
-                }
-
-                option.text = displayText;
+                option.text = label.includes('back') ? `📷 後置：${label}` : `👤 前置：${label}`;
                 cameraSelect.appendChild(option);
             });
-
-            // 嘗試將選單選中當前使用的鏡頭 (如果是第一次，通常是後鏡頭)
-            const currentTrack = currentStream.getVideoTracks()[0];
-            const currentDeviceId = currentTrack.getSettings().deviceId;
-            if (currentDeviceId) {
-                cameraSelect.value = currentDeviceId;
-            }
         }
 
-        // 4. 使用者切換選單時觸發
         async function changeCamera() {
             const deviceId = cameraSelect.value;
             statusDiv.innerText = "切換鏡頭中...";
-            
             try {
                 await setupCamera(deviceId);
                 video.play();
-                statusDiv.innerText = "鏡頭已切換，繼續分析";
+                statusDiv.innerText = "繼續分析";
             } catch (err) {
-                console.error(err);
                 statusDiv.innerText = "切換失敗: " + err.message;
             }
         }
 
-        // 5. 預測循環
         function predictLoop() {
-            // 確保影片有在播放且寬度大於0才執行
-            if (video.readyState === video.HAVE_ENOUGH_DATA) {
-                
-                // 設定 Canvas 大小與 Video 一致
+            if (video.readyState === video.HAVE_ENOUGH_DATA && tfliteModel) {
                 canvas.width = video.videoWidth;
                 canvas.height = video.videoHeight;
 
-                // 執行偵測
-                model.detect(video).then(predictions => {
-                    // 清除上一幀的繪圖
-                    ctx.clearRect(0, 0, canvas.width, canvas.height);
-                    
-                    // 繪製新的偵測結果
-                    renderPredictions(predictions);
-                    
-                    // 下一幀
-                    requestAnimationFrame(predictLoop);
-                });
-            } else {
-                // 如果影片還沒準備好，稍等一下再試
-                requestAnimationFrame(predictLoop);
+                // 將影像轉為 Tensor
+                const imgTensor = tf.browser.fromPixels(video);
+                
+                // TFLite 預測
+                // 注意：這裡的輸出格式取決於你的模型訓練方式（如 YOLO 或 SSD）
+                // 以下為通用範例，具體解析需對應你的模型輸出層
+                const prediction = tfliteModel.predict(imgTensor.expandDims(0));
+                
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                
+                // 這裡示範獲取結果 (需根據你的模型 Output 索引修改)
+                // 如果是自定義模型，通常需要處理 prediction 的數據
+                // console.log(prediction); 
+
+                imgTensor.dispose(); // 釋放記憶體
             }
-        }
-
-        // 6. 繪製框線與標籤
-        function renderPredictions(predictions) {
-            ctx.font = '16px Arial';
-            ctx.textBaseline = 'top';
-
-            predictions.forEach(prediction => {
-                const x = prediction.bbox[0];
-                const y = prediction.bbox[1];
-                const width = prediction.bbox[2];
-                const height = prediction.bbox[3];
-
-                // 畫框框
-                ctx.strokeStyle = '#00FFFF';
-                ctx.lineWidth = 4;
-                ctx.strokeRect(x, y, width, height);
-
-                // 畫背景色塊 (文字底圖)
-                ctx.fillStyle = '#00FFFF';
-                const textWidth = ctx.measureText(prediction.class).width;
-                ctx.fillRect(x, y, textWidth + 10, 25);
-
-                // 畫文字
-                ctx.fillStyle = '#000000';
-                ctx.fillText(prediction.class + ` (${Math.round(prediction.score * 100)}%)`, x + 5, y + 5);
-            });
+            requestAnimationFrame(predictLoop);
         }
     </script>
 </body>

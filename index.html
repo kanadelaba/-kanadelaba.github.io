@@ -3,105 +3,27 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>手機鏡頭 AI 即時分析 (TFLite 版)</title>
-    
+    <title>AI 即時分析 - 自定義模型版</title>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-tflite/dist/tf-tflite.min.js"></script>
-
     <style>
-        body {
-            font-family: 'Arial', sans-serif;
-            margin: 0;
-            padding: 0;
-            background-color: #222;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            height: 100vh;
-            overflow: hidden;
-        }
-
-        #status {
-            position: absolute;
-            top: 20px;
-            z-index: 20;
-            color: #00ffcc;
-            background: rgba(0, 0, 0, 0.7);
-            padding: 8px 15px;
-            border-radius: 20px;
-            font-size: 14px;
-            pointer-events: none;
-        }
-
-        #selectContainer {
-            position: absolute;
-            top: 70px;
-            z-index: 20;
-            display: none;
-        }
-
-        select {
-            padding: 8px 15px;
-            border-radius: 20px;
-            border: none;
-            background: rgba(255, 255, 255, 0.9);
-            font-size: 14px;
-            outline: none;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
-        }
-
-        .cam-container {
-            position: relative;
-            width: 100%;
-            max-width: 640px;
-            height: auto;
-            overflow: hidden;
-            display: flex;
-            justify-content: center;
-            background: #000;
-        }
-
-        video {
-            display: block;
-            width: 100%;
-            height: auto;
-        }
-
-        canvas {
-            position: absolute;
-            top: 0;
-            left: 0;
-            z-index: 5;
-        }
-
-        button {
-            position: absolute;
-            bottom: 40px;
-            z-index: 30;
-            padding: 15px 30px;
-            font-size: 18px;
-            background-color: #007bff;
-            color: white;
-            border: none;
-            border-radius: 50px;
-            cursor: pointer;
-            box-shadow: 0 4px 10px rgba(0,0,0,0.5);
-            transition: background 0.3s;
-        }
-        
-        button:disabled {
-            background-color: #555;
-            color: #aaa;
-        }
+        body { font-family: Arial, sans-serif; margin: 0; background-color: #222; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; overflow: hidden; color: white; }
+        #status { position: absolute; top: 20px; z-index: 20; color: #00ffcc; background: rgba(0,0,0,0.7); padding: 8px 15px; border-radius: 20px; font-size: 14px; }
+        #controls { position: absolute; top: 70px; z-index: 20; display: flex; flex-direction: column; gap: 10px; align-items: center; }
+        select, input[type="file"] { padding: 8px; border-radius: 5px; background: white; color: black; }
+        .cam-container { position: relative; width: 100%; max-width: 640px; background: #000; }
+        video { width: 100%; height: auto; display: block; }
+        canvas { position: absolute; top: 0; left: 0; z-index: 5; }
+        #startBtn { position: absolute; bottom: 40px; z-index: 30; padding: 15px 30px; font-size: 18px; background: #007bff; color: white; border: none; border-radius: 50px; cursor: pointer; }
     </style>
 </head>
 <body>
 
-    <div id="status">等待啟動...</div>
+    <div id="status">請先選擇 .tflite 模型檔案</div>
 
-    <div id="selectContainer">
-        <select id="cameraSelect" onchange="changeCamera()"></select>
+    <div id="controls">
+        <input type="file" id="modelUpload" accept=".tflite">
+        <select id="cameraSelect" onchange="changeCamera()" style="display:none;"></select>
     </div>
 
     <div class="cam-container">
@@ -109,118 +31,143 @@
         <canvas id="canvas"></canvas>
     </div>
 
-    <button id="startBtn" onclick="startApp()">開啟相機並分析 (TFLite)</button>
+    <button id="startBtn" onclick="startApp()">載入模型並啟動</button>
 
     <script>
         const video = document.getElementById('webcam');
         const canvas = document.getElementById('canvas');
         const ctx = canvas.getContext('2d');
         const statusDiv = document.getElementById('status');
-        const startBtn = document.getElementById('startBtn');
-        const selectContainer = document.getElementById('selectContainer');
+        const modelUpload = document.getElementById('modelUpload');
         const cameraSelect = document.getElementById('cameraSelect');
-        
+        const startBtn = document.getElementById('startBtn');
+
         let tfliteModel = null;
         let currentStream = null;
-
-        // 這裡設定你的模型路徑 (相對於 index.html)
-        const MODEL_PATH = './models/model.tflite';
+        let inputShape = [224, 224]; // 預設，載入後會自動更新
 
         async function startApp() {
+            if (!modelUpload.files[0]) {
+                alert("請先選取 .tflite 檔案！");
+                return;
+            }
+
             startBtn.disabled = true;
-            statusDiv.innerText = "正在初始化 TFLite 模型...";
-            
+            statusDiv.innerText = "正在讀取模型...";
+
             try {
-                // 載入 TFLite 模型
-                tfliteModel = await tflite.loadTFLiteModel(MODEL_PATH);
-                statusDiv.innerText = "模型載入完成，正在請求相機...";
+                // 1. 讀取本地檔案並轉為 URL
+                const file = modelUpload.files[0];
+                const modelUrl = URL.createObjectURL(file);
                 
+                // 2. 載入 TFLite
+                tfliteModel = await tflite.loadTFLiteModel(modelUrl);
+                
+                // 3. 自動偵測模型要求的輸入大小
+                if (tfliteModel.inputs && tfliteModel.inputs[0]) {
+                    inputShape = [tfliteModel.inputs[0].shape[1], tfliteModel.inputs[0].shape[2]];
+                    console.log("模型輸入尺寸:", inputShape);
+                }
+
+                statusDiv.innerText = "模型載入成功！啟動相機...";
                 await setupCamera();
                 await populateCameraList();
-                
-                selectContainer.style.display = 'block';
+
+                cameraSelect.style.display = 'block';
+                modelUpload.style.display = 'none';
                 startBtn.style.display = 'none';
-                
+
                 video.play();
-                statusDiv.innerText = "正在分析中...";
                 predictLoop();
 
             } catch (err) {
                 console.error(err);
-                statusDiv.innerText = "載入失敗: " + err.message + " (請確認模型路徑是否正確)";
+                statusDiv.innerText = "錯誤: " + err.message;
                 startBtn.disabled = false;
             }
         }
 
         async function setupCamera(deviceId = null) {
-            if (currentStream) {
-                currentStream.getTracks().forEach(track => track.stop());
-            }
-
+            if (currentStream) currentStream.getTracks().forEach(t => t.stop());
             const constraints = {
-                audio: false,
-                video: {
-                    deviceId: deviceId ? { exact: deviceId } : undefined,
-                    facingMode: deviceId ? undefined : 'environment',
-                    width: { ideal: 640 },
-                    height: { ideal: 480 }
-                }
+                video: { deviceId: deviceId ? { exact: deviceId } : undefined, facingMode: 'environment', width: 640, height: 480 }
             };
-
-            const stream = await navigator.mediaDevices.getUserMedia(constraints);
-            currentStream = stream;
-            video.srcObject = stream;
-            
-            return new Promise((resolve) => {
-                video.onloadedmetadata = () => resolve(video);
-            });
+            currentStream = await navigator.mediaDevices.getUserMedia(constraints);
+            video.srcObject = currentStream;
+            return new Promise(res => video.onloadedmetadata = res);
         }
 
         async function populateCameraList() {
             const devices = await navigator.mediaDevices.enumerateDevices();
-            const videoDevices = devices.filter(device => device.kind === 'videoinput');
+            const videoDevices = devices.filter(d => d.kind === 'videoinput');
             cameraSelect.innerHTML = "";
-            videoDevices.forEach((device, index) => {
-                const option = document.createElement('option');
-                option.value = device.deviceId;
-                const label = device.label || `攝影機 ${index + 1}`;
-                option.text = label.includes('back') ? `📷 後置：${label}` : `👤 前置：${label}`;
-                cameraSelect.appendChild(option);
+            videoDevices.forEach(d => {
+                const opt = document.createElement('option');
+                opt.value = d.deviceId;
+                opt.text = d.label || "攝影機";
+                cameraSelect.appendChild(opt);
             });
         }
 
         async function changeCamera() {
-            const deviceId = cameraSelect.value;
-            statusDiv.innerText = "切換鏡頭中...";
-            try {
-                await setupCamera(deviceId);
-                video.play();
-                statusDiv.innerText = "繼續分析";
-            } catch (err) {
-                statusDiv.innerText = "切換失敗: " + err.message;
-            }
+            await setupCamera(cameraSelect.value);
+            video.play();
         }
 
-        function predictLoop() {
+        async function predictLoop() {
             if (video.readyState === video.HAVE_ENOUGH_DATA && tfliteModel) {
                 canvas.width = video.videoWidth;
                 canvas.height = video.videoHeight;
 
-                // 將影像轉為 Tensor
-                const imgTensor = tf.browser.fromPixels(video);
+                // 通用預處理
+                const imgTensor = tf.tidy(() => {
+                    return tf.browser.fromPixels(video)
+                             .resizeNearestNeighbor(inputShape)
+                             .expandDims(0)
+                             .toFloat()
+                             .div(255.0);
+                });
+
+                const result = await tfliteModel.predict(imgTensor);
                 
-                // TFLite 預測
-                // 注意：這裡的輸出格式取決於你的模型訓練方式（如 YOLO 或 SSD）
-                // 以下為通用範例，具體解析需對應你的模型輸出層
-                const prediction = tfliteModel.predict(imgTensor.expandDims(0));
-                
+                // 通用解析邏輯：假設為標準物件偵測輸出 [boxes, classes, scores, count]
+                // 或是分類輸出 [probabilities]
                 ctx.clearRect(0, 0, canvas.width, canvas.height);
                 
-                // 這裡示範獲取結果 (需根據你的模型 Output 索引修改)
-                // 如果是自定義模型，通常需要處理 prediction 的數據
-                // console.log(prediction); 
+                const outputs = Object.values(result);
+                
+                if (outputs.length >= 3) {
+                    // 偵測型模型 (Detection)
+                    const boxes = outputs[0].dataSync(); 
+                    const classes = outputs[1].dataSync();
+                    const scores = outputs[2].dataSync();
+                    const count = outputs[3] ? outputs[3].dataSync()[0] : 10;
 
-                imgTensor.dispose(); // 釋放記憶體
+                    for (let i = 0; i < count; i++) {
+                        if (scores[i] > 0.4) {
+                            const [y1, x1, y2, x2] = [boxes[i*4], boxes[i*4+1], boxes[i*4+2], boxes[i*4+3]];
+                            const rx = x1 * canvas.width;
+                            const ry = y1 * canvas.height;
+                            const rw = (x2 - x1) * canvas.width;
+                            const rh = (y2 - y1) * canvas.height;
+
+                            ctx.strokeStyle = "#00FFCC";
+                            ctx.lineWidth = 3;
+                            ctx.strokeRect(rx, ry, rw, rh);
+                            ctx.fillStyle = "#00FFCC";
+                            ctx.fillText(`ID ${classes[i]}: ${Math.round(scores[i]*100)}%`, rx, ry > 20 ? ry - 5 : 20);
+                        }
+                    }
+                } else {
+                    // 分類型模型 (Classification)
+                    const probs = outputs[0].dataSync();
+                    const maxProb = Math.max(...probs);
+                    const idx = probs.indexOf(maxProb);
+                    statusDiv.innerText = `辨識結果: ID ${idx} (${Math.round(maxProb*100)}%)`;
+                }
+
+                imgTensor.dispose();
+                Object.values(result).forEach(t => t.dispose());
             }
             requestAnimationFrame(predictLoop);
         }

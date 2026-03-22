@@ -3,94 +3,34 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>通用 TFLite AI 偵測工具</title>
-    
+    <title>AI 測速照相偵測工具</title>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-tflite/dist/tf-tflite.min.js"></script>
-
     <style>
-        body {
-            font-family: 'Arial', sans-serif;
-            margin: 0;
-            padding: 0;
-            background-color: #222;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            height: 100vh;
-            overflow: hidden;
-            color: white;
-        }
-
-        #status {
-            position: absolute;
-            top: 20px;
-            z-index: 20;
-            color: #00ffcc;
-            background: rgba(0, 0, 0, 0.7);
-            padding: 8px 15px;
-            border-radius: 20px;
-            font-size: 14px;
-            text-align: center;
-        }
-
-        #controls {
-            position: absolute;
-            top: 70px;
-            z-index: 20;
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-            align-items: center;
-            width: 90%;
-        }
-
-        input[type="file"], select {
-            padding: 10px;
-            border-radius: 10px;
-            border: none;
-            background: rgba(255, 255, 255, 0.9);
-            font-size: 14px;
-            width: 100%;
-            max-width: 300px;
-        }
-
-        .cam-container {
-            position: relative;
-            width: 100%;
-            max-width: 640px;
-            background: #000;
-            display: flex;
-            justify-content: center;
-        }
-
+        body { font-family: Arial, sans-serif; margin: 0; background-color: #222; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; overflow: hidden; color: white; }
+        #status { position: absolute; top: 15px; z-index: 20; color: #00ffcc; background: rgba(0,0,0,0.8); padding: 8px 15px; border-radius: 20px; font-size: 13px; }
+        #controls { position: absolute; top: 60px; z-index: 20; display: flex; flex-direction: column; gap: 8px; width: 80%; max-width: 300px; }
+        select, input, button.tool-btn { padding: 10px; border-radius: 8px; border: none; font-size: 14px; width: 100%; }
+        .cam-container { position: relative; width: 100%; max-width: 640px; background: #000; }
         video { width: 100%; height: auto; display: block; }
         canvas { position: absolute; top: 0; left: 0; z-index: 5; }
-
-        #startBtn {
-            position: absolute;
-            bottom: 40px;
-            z-index: 30;
-            padding: 15px 40px;
-            font-size: 18px;
-            background-color: #007bff;
-            color: white;
-            border: none;
-            border-radius: 50px;
-            cursor: pointer;
-            box-shadow: 0 4px 10px rgba(0,0,0,0.5);
-        }
-        
-        #startBtn:disabled { background-color: #555; }
+        #startBtn { position: absolute; bottom: 30px; z-index: 30; padding: 15px 40px; font-size: 18px; background: #007bff; color: white; border: none; border-radius: 50px; cursor: pointer; font-weight: bold; }
     </style>
 </head>
 <body>
 
-    <div id="status">步驟 1: 請先選擇本地的 .tflite 模型檔案</div>
+    <div id="status">準備中...</div>
 
     <div id="controls">
+        <label style="font-size:12px;">1. 選擇模型檔案 (.tflite)</label>
         <input type="file" id="modelUpload" accept=".tflite">
+        
+        <label style="font-size:12px;">2. 選擇解碼格式</label>
+        <select id="formatSelect">
+            <option value="mediapipe" selected>MediaPipe Model Maker</option>
+            <option value="yolo">YOLO (v8/v11)</option>
+        </select>
+
         <select id="cameraSelect" onchange="changeCamera()" style="display:none;"></select>
     </div>
 
@@ -99,7 +39,7 @@
         <canvas id="canvas"></canvas>
     </div>
 
-    <button id="startBtn" onclick="startApp()">載入模型並啟動 AI</button>
+    <button id="startBtn" onclick="startApp()">啟動 AI 分析</button>
 
     <script>
         const video = document.getElementById('webcam');
@@ -107,83 +47,70 @@
         const ctx = canvas.getContext('2d');
         const statusDiv = document.getElementById('status');
         const modelUpload = document.getElementById('modelUpload');
+        const formatSelect = document.getElementById('formatSelect');
         const cameraSelect = document.getElementById('cameraSelect');
         const startBtn = document.getElementById('startBtn');
 
         let tfliteModel = null;
         let currentStream = null;
-        let inputShape = [224, 224]; // 預設值，載入模型後會更新
+        let inputShape = [224, 224];
 
-        // 1. 啟動入口
+        // 標籤映射表 (依據你的 class_map.txt)
+        const classMap = {
+            0: "前方有測速照相",
+            // 如果有更多類別 c1, c2... 可以在此增加
+        };
+
         async function startApp() {
-            if (!modelUpload.files[0]) {
-                alert("請先選取 .tflite 模型檔案！");
-                return;
+            let modelSource;
+            
+            if (modelUpload.files[0]) {
+                modelSource = URL.createObjectURL(modelUpload.files[0]);
+            } else {
+                // 如果沒上傳，預設抓取根目錄的 model.tflite
+                modelSource = './model.tflite'; 
+                statusDiv.innerText = "嘗試載入預設模型...";
             }
 
             startBtn.disabled = true;
-            statusDiv.innerText = "正在初始化 TFLite 模型...";
-
             try {
-                const file = modelUpload.files[0];
-                const modelUrl = URL.createObjectURL(file);
-                
-                // 載入模型
-                tfliteModel = await tflite.loadTFLiteModel(modelUrl);
-                
-                // 自動偵測模型所需的輸入尺寸
+                tfliteModel = await tflite.loadTFLiteModel(modelSource);
                 if (tfliteModel.inputs && tfliteModel.inputs[0]) {
                     inputShape = [tfliteModel.inputs[0].shape[1], tfliteModel.inputs[0].shape[2]];
-                    console.log("偵測到模型輸入尺寸:", inputShape);
                 }
 
-                statusDiv.innerText = "模型載入成功！請求相機權限...";
+                statusDiv.innerText = "模型就緒，啟動鏡頭...";
                 await setupCamera();
                 await populateCameraList();
 
-                // 介面轉換
-                cameraSelect.style.display = 'block';
-                modelUpload.style.display = 'none';
+                document.getElementById('controls').style.display = 'none';
                 startBtn.style.display = 'none';
-
                 video.play();
-                statusDiv.innerText = "正在分析畫面...";
                 predictLoop();
-
             } catch (err) {
+                statusDiv.innerText = "載入失敗，請檢查檔案或路徑";
                 console.error(err);
-                statusDiv.innerText = "錯誤: " + err.message;
                 startBtn.disabled = false;
             }
         }
 
-        // 2. 相機設定
         async function setupCamera(deviceId = null) {
-            if (currentStream) {
-                currentStream.getTracks().forEach(track => track.stop());
-            }
-            const constraints = {
-                video: {
-                    deviceId: deviceId ? { exact: deviceId } : undefined,
-                    facingMode: 'environment',
-                    width: { ideal: 640 },
-                    height: { ideal: 480 }
-                }
-            };
+            if (currentStream) currentStream.getTracks().forEach(t => t.stop());
+            const constraints = { video: { deviceId: deviceId ? { exact: deviceId } : undefined, facingMode: 'environment' } };
             currentStream = await navigator.mediaDevices.getUserMedia(constraints);
             video.srcObject = currentStream;
             return new Promise(res => video.onloadedmetadata = res);
         }
 
-        // 3. 鏡頭選單
         async function populateCameraList() {
             const devices = await navigator.mediaDevices.enumerateDevices();
             const videoDevices = devices.filter(d => d.kind === 'videoinput');
+            cameraSelect.style.display = 'block';
             cameraSelect.innerHTML = "";
-            videoDevices.forEach((d, i) => {
+            videoDevices.forEach(d => {
                 const opt = document.createElement('option');
                 opt.value = d.deviceId;
-                opt.text = d.label || `攝影機 ${i+1}`;
+                opt.text = d.label || "攝影機";
                 cameraSelect.appendChild(opt);
             });
         }
@@ -193,98 +120,64 @@
             video.play();
         }
 
-        // 4. 通用解析與預測循環
         async function predictLoop() {
             if (video.readyState === video.HAVE_ENOUGH_DATA && tfliteModel) {
                 canvas.width = video.videoWidth;
                 canvas.height = video.videoHeight;
 
-                // 影像預處理
                 const imgTensor = tf.tidy(() => {
-                    return tf.browser.fromPixels(video)
-                             .resizeNearestNeighbor(inputShape)
-                             .expandDims(0)
-                             .toFloat()
-                             .div(255.0);
+                    return tf.browser.fromPixels(video).resizeNearestNeighbor(inputShape).expandDims(0).toFloat().div(255.0);
                 });
 
                 const result = await tfliteModel.predict(imgTensor);
                 ctx.clearRect(0, 0, canvas.width, canvas.height);
-                
                 const outputs = Object.values(result);
-                const firstOut = outputs[0];
-                const shape = firstOut.shape;
+                const format = formatSelect.value;
 
-                // --- 格式 A: YOLO (單一輸出張量 [1, 84, 8400] 等) ---
-                if (shape.length === 3 && (shape[1] > 10 || shape[2] > 10)) {
-                    const data = firstOut.dataSync();
-                    const dims = shape[1]; // 屬性數
-                    const preds = shape[2]; // 預測框數
-
-                    for (let i = 0; i < preds; i++) {
-                        if (i % 3 !== 0) continue; // 效能抽樣
-
-                        let maxScore = 0;
-                        let classId = -1;
-                        // 尋找最大信心值 (假設前 4 為座標)
-                        for (let c = 4; c < dims; c++) {
-                            const s = data[c * preds + i];
-                            if (s > maxScore) { maxScore = s; classId = c - 4; }
-                        }
-
-                        if (maxScore > 0.45) {
-                            const cx = data[0 * preds + i];
-                            const cy = data[1 * preds + i];
-                            const w = data[2 * preds + i];
-                            const h = data[3 * preds + i];
-                            
-                            drawBox((cx - w/2) * canvas.width, (cy - h/2) * canvas.height, w * canvas.width, h * canvas.height, `YOLO ${classId}`, maxScore);
-                        }
-                    }
-                } 
-                // --- 格式 B: 標準 SSD (多陣列輸出: Boxes, Classes, Scores) ---
-                else if (outputs.length >= 3) {
-                    const boxes = outputs[0].dataSync(); 
+                if (format === 'mediapipe' && outputs.length >= 3) {
+                    // MediaPipe SSD 解析: [ymin, xmin, ymax, xmax]
+                    const boxes = outputs[0].dataSync();
                     const classes = outputs[1].dataSync();
                     const scores = outputs[2].dataSync();
-                    const count = outputs[3] ? outputs[3].dataSync()[0] : 10;
-
-                    for (let i = 0; i < count; i++) {
-                        if (scores[i] > 0.4) {
-                            const [y1, x1, y2, x2] = [boxes[i*4], boxes[i*4+1], boxes[i*4+2], boxes[i*4+3]];
-                            drawBox(x1 * canvas.width, y1 * canvas.height, (x2-x1) * canvas.width, (y2-y1) * canvas.height, `ID ${classes[i]}`, scores[i]);
+                    for (let i = 0; i < scores.length; i++) {
+                        if (scores[i] > 0.45) {
+                            const ymin = boxes[i*4], xmin = boxes[i*4+1], ymax = boxes[i*4+2], xmax = boxes[i*4+3];
+                            drawUI(xmin * canvas.width, ymin * canvas.height, (xmax-xmin)*canvas.width, (ymax-ymin)*canvas.height, classes[i], scores[i]);
+                        }
+                    }
+                } else if (format === 'yolo') {
+                    // YOLO 解析 (假設輸出 [1, 5+N, 8400])
+                    const data = outputs[0].dataSync();
+                    const dims = outputs[0].shape[1];
+                    const preds = outputs[0].shape[2];
+                    for (let i = 0; i < preds; i += 2) {
+                        let maxS = 0, cls = 0;
+                        for (let c = 4; c < dims; c++) {
+                            if (data[c*preds+i] > maxS) { maxS = data[c*preds+i]; cls = c-4; }
+                        }
+                        if (maxS > 0.5) {
+                            const cx = data[i], cy = data[preds+i], w = data[2*preds+i], h = data[3*preds+i];
+                            drawUI((cx-w/2)*canvas.width, (cy-h/2)*canvas.height, w*canvas.width, h*canvas.height, cls, maxS);
                         }
                     }
                 }
-                // --- 格式 C: 分類 (單一陣列 [1, N]) ---
-                else {
-                    const probs = firstOut.dataSync();
-                    const maxProb = Math.max(...probs);
-                    const idx = Array.from(probs).indexOf(maxProb);
-                    statusDiv.innerText = `分類預測: ID ${idx} (${Math.round(maxProb * 100)}%)`;
-                }
 
-                // 記憶體管理
                 imgTensor.dispose();
                 outputs.forEach(t => t.dispose());
             }
             requestAnimationFrame(predictLoop);
         }
 
-        // 5. 繪製框線輔助函式
-        function drawBox(x, y, w, h, label, score) {
-            ctx.strokeStyle = "#00FFCC";
-            ctx.lineWidth = 3;
+        function drawUI(x, y, w, h, id, score) {
+            ctx.strokeStyle = "#FF3300"; // 警示紅色
+            ctx.lineWidth = 4;
             ctx.strokeRect(x, y, w, h);
-            
-            ctx.fillStyle = "#00FFCC";
-            ctx.font = "bold 16px Arial";
-            const txt = `${label} (${Math.round(score * 100)}%)`;
-            const textWidth = ctx.measureText(txt).width;
-            
-            ctx.fillRect(x, (y > 25 ? y - 25 : y), textWidth + 10, 25);
-            ctx.fillStyle = "black";
-            ctx.fillText(txt, x + 5, (y > 25 ? y - 7 : y + 18));
+            const label = classMap[Math.round(id)] || `未知物體 ${id}`;
+            const txt = `${label} ${Math.round(score*100)}%`;
+            ctx.fillStyle = "#FF3300";
+            ctx.font = "bold 20px Arial";
+            ctx.fillText(txt, x, y > 30 ? y - 10 : y + 25);
+            statusDiv.innerText = "偵測中: " + label;
         }
     </script>
 </body>

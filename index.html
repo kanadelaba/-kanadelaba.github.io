@@ -2,36 +2,236 @@
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI偵測工具</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>AI 測速照相偵測系統 - GitHub Pages 支援版</title>
+    <!-- 引入 TensorFlow.js -->
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <!-- 引入 TFLite 模組 -->
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-tflite/dist/tf-tflite.min.js"></script>
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&display=swap" rel="stylesheet">
     <style>
-        body { font-family: Arial, sans-serif; margin: 0; background-color: #222; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; overflow: hidden; color: white; }
-        #status { position: absolute; top: 15px; z-index: 20; color: #00ffcc; background: rgba(0,0,0,0.8); padding: 8px 15px; border-radius: 20px; font-size: 13px; }
-        #controls { position: absolute; top: 60px; z-index: 20; display: flex; flex-direction: column; gap: 8px; width: 80%; max-width: 300px; }
-        select, input, button.tool-btn { padding: 10px; border-radius: 8px; border: none; font-size: 14px; width: 100%; }
-        .cam-container { position: relative; width: 100%; max-width: 640px; background: #000; }
-        video { width: 100%; height: auto; display: block; }
-        canvas { position: absolute; top: 0; left: 0; z-index: 5; }
-        #startBtn { position: absolute; bottom: 30px; z-index: 30; padding: 15px 40px; font-size: 18px; background: #007bff; color: white; border: none; border-radius: 50px; cursor: pointer; font-weight: bold; }
+        :root {
+            --primary: #00ffcc;
+            --primary-glow: rgba(0, 255, 204, 0.6);
+            --bg-dark: #0a0a0a;
+            --glass-bg: rgba(20, 20, 25, 0.75);
+            --glass-border: rgba(255, 255, 255, 0.1);
+        }
+
+        * {
+            box-sizing: border-box;
+            font-family: 'Inter', sans-serif;
+        }
+
+        body { 
+            margin: 0; 
+            background-color: var(--bg-dark); 
+            background-image: 
+                radial-gradient(circle at 15% 50%, rgba(0, 255, 204, 0.08), transparent 25%),
+                radial-gradient(circle at 85% 30%, rgba(150, 0, 255, 0.08), transparent 25%);
+            display: flex; 
+            flex-direction: column; 
+            align-items: center; 
+            justify-content: center; 
+            min-height: 100vh; 
+            overflow: hidden; 
+            color: #ffffff; 
+        }
+
+        #status { 
+            position: absolute; 
+            top: 20px; 
+            z-index: 50; 
+            color: var(--primary); 
+            background: var(--glass-bg); 
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            padding: 12px 24px; 
+            border-radius: 30px; 
+            font-size: 14px; 
+            font-weight: 600;
+            border: 1px solid var(--glass-border);
+            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+            transition: all 0.3s ease;
+        }
+
+        /* Glassmorphism 控制面板 */
+        #controls { 
+            position: absolute; 
+            z-index: 40; 
+            display: flex; 
+            flex-direction: column; 
+            gap: 16px; 
+            width: 90%; 
+            max-width: 360px; 
+            background: var(--glass-bg);
+            backdrop-filter: blur(15px);
+            -webkit-backdrop-filter: blur(15px);
+            padding: 24px;
+            border-radius: 20px;
+            border: 1px solid var(--glass-border);
+            box-shadow: 0 16px 40px rgba(0,0,0,0.5);
+            transform: translateY(0);
+            transition: opacity 0.5s ease, transform 0.5s ease;
+        }
+
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        label {
+            font-size: 12px;
+            font-weight: 600;
+            color: #aaa;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        select, input[type="file"] { 
+            padding: 12px; 
+            border-radius: 10px; 
+            border: 1px solid rgba(255, 255, 255, 0.15); 
+            font-size: 14px; 
+            width: 100%; 
+            background: rgba(0, 0, 0, 0.4);
+            color: white;
+            transition: border-color 0.3s ease;
+            cursor: pointer;
+            outline: none;
+        }
+
+        select:focus, input[type="file"]:focus {
+            border-color: var(--primary);
+        }
+
+        .hint {
+            color: #777; 
+            font-size: 11px;
+            margin-top: 2px;
+        }
+
+        /* 視訊與畫布容器 */
+        .cam-container { 
+            position: relative; 
+            width: 100%; 
+            max-width: 800px; 
+            height: 100vh;
+            background: #000; 
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        @media (min-width: 800px) {
+            .cam-container {
+                height: 80vh;
+                border-radius: 24px;
+                overflow: hidden;
+                box-shadow: 0 20px 60px rgba(0,255,204,0.1);
+                border: 1px solid var(--glass-border);
+            }
+        }
+
+        video { 
+            width: 100%; 
+            height: 100%; 
+            object-fit: cover; /* 讓畫面填滿整個區域，適合手機全螢幕 */
+            display: block; 
+        }
+
+        canvas { 
+            position: absolute; 
+            top: 0; 
+            left: 0; 
+            width: 100%;
+            height: 100%;
+            z-index: 5; 
+        }
+
+        /* 霓虹發光按鈕 */
+        #startBtn { 
+            position: absolute; 
+            bottom: 40px; 
+            z-index: 50; 
+            padding: 16px 40px; 
+            font-size: 16px; 
+            background: transparent;
+            color: var(--primary); 
+            border: 2px solid var(--primary); 
+            border-radius: 50px; 
+            cursor: pointer; 
+            font-weight: 800; 
+            letter-spacing: 1px;
+            box-shadow: 0 0 15px var(--primary-glow), inset 0 0 10px var(--primary-glow);
+            transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+            text-transform: uppercase;
+        }
+
+        #startBtn:hover {
+            background: var(--primary);
+            color: #000;
+            box-shadow: 0 0 25px var(--primary-glow), inset 0 0 20px var(--primary-glow);
+            transform: translateY(-2px);
+        }
+
+        #startBtn:disabled {
+            background: transparent;
+            color: #555;
+            border-color: #555;
+            cursor: not-allowed;
+            box-shadow: none;
+            transform: none;
+        }
+
+        /* 載入動畫 */
+        .spinner {
+            display: none;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(0, 255, 204, 0.3);
+            border-radius: 50%;
+            border-top-color: var(--primary);
+            animation: spin 1s ease-in-out infinite;
+            margin-right: 10px;
+            vertical-align: middle;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
     </style>
 </head>
 <body>
 
-    <div id="status">準備中...</div>
+    <div id="status">
+        <span class="spinner" id="spinner"></span>
+        <span id="statusText">系統準備中...</span>
+    </div>
 
     <div id="controls">
-        <label style="font-size:12px;">1. 選擇模型檔案 (.tflite)</label>
-        <input type="file" id="modelUpload" accept=".tflite">
+        <div class="control-group">
+            <label>1. 模型選擇 (Model)</label>
+            <input type="file" id="modelUpload" accept=".tflite">
+            <div class="hint">*若未上傳，GitHub Pages 將自動載入專案內的 model.tflite</div>
+        </div>
         
-        <label style="font-size:12px;">2. 選擇解碼格式</label>
-        <select id="formatSelect">
-            <option value="mediapipe" selected>MediaPipe Model Maker</option>
-            <option value="yolo">YOLO (v8/v11)</option>
-        </select>
+        <div class="control-group">
+            <label>2. 輸出解碼器 (Decoder)</label>
+            <select id="formatSelect">
+                <option value="mediapipe" selected>MediaPipe Object Detector (推薦)</option>
+                <option value="yolo">YOLO Format</option>
+            </select>
+        </div>
 
-        <select id="cameraSelect" onchange="changeCamera()" style="display:none;"></select>
+        <div class="control-group">
+            <label>3. 攝影機切換 (Camera)</label>
+            <select id="cameraSelect" onchange="changeCamera()">
+                <option value="">預設相機</option>
+            </select>
+        </div>
     </div>
 
     <div class="cam-container">
@@ -39,145 +239,235 @@
         <canvas id="canvas"></canvas>
     </div>
 
-    <button id="startBtn" onclick="startApp()">啟動 AI 分析</button>
+    <button id="startBtn" onclick="startApp()">啟動 AI 系統</button>
 
     <script>
+        // 設定 TFLite WASM 路徑 (使用 CDN 完全兼容 GitHub Pages)
+        tflite.setWasmPath('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-tflite/dist/');
+
         const video = document.getElementById('webcam');
         const canvas = document.getElementById('canvas');
         const ctx = canvas.getContext('2d');
-        const statusDiv = document.getElementById('status');
+        const statusText = document.getElementById('statusText');
+        const spinner = document.getElementById('spinner');
         const modelUpload = document.getElementById('modelUpload');
         const formatSelect = document.getElementById('formatSelect');
         const cameraSelect = document.getElementById('cameraSelect');
         const startBtn = document.getElementById('startBtn');
+        const controls = document.getElementById('controls');
 
         let tfliteModel = null;
         let currentStream = null;
-        let inputShape = [224, 224];
+        let inputShape = [320, 320]; // 預設值，會被模型覆寫
 
-        // 標籤映射表 (依據你的 class_map.txt)
+        // 標籤映射表
         const classMap = {
-            0: "前方有測速照相",
-            // 如果有更多類別 c1, c2... 可以在此增加
+            0: "測速照相鎖定",
         };
+
+        function setStatus(text, isLoading = false) {
+            statusText.innerText = text;
+            spinner.style.display = isLoading ? 'inline-block' : 'none';
+        }
 
         async function startApp() {
             let modelSource;
             
             if (modelUpload.files[0]) {
                 modelSource = URL.createObjectURL(modelUpload.files[0]);
+                setStatus("正在載入自訂模型...", true);
             } else {
-                // 如果沒上傳，預設抓取根目錄的 model.tflite
+                // 完美的 GitHub Pages 相對路徑設定
                 modelSource = './model.tflite'; 
-                statusDiv.innerText = "嘗試載入預設模型...";
+                setStatus("正在從 GitHub 載入 AI 模型...", true);
             }
 
             startBtn.disabled = true;
             try {
                 tfliteModel = await tflite.loadTFLiteModel(modelSource);
+                
                 if (tfliteModel.inputs && tfliteModel.inputs[0]) {
                     inputShape = [tfliteModel.inputs[0].shape[1], tfliteModel.inputs[0].shape[2]];
+                    console.log(`模型輸入維度: ${inputShape[0]}x${inputShape[1]}`);
                 }
 
-                statusDiv.innerText = "模型就緒，啟動鏡頭...";
+                setStatus("正在啟動攝影機權限...", true);
                 await setupCamera();
                 await populateCameraList();
 
-                document.getElementById('controls').style.display = 'none';
-                startBtn.style.display = 'none';
+                // 隱藏控制面板，進入沉浸模式
+                controls.style.opacity = '0';
+                controls.style.pointerEvents = 'none';
+                startBtn.style.opacity = '0';
+                startBtn.style.pointerEvents = 'none';
+                
                 video.play();
+                setStatus("系統運作中 - AI 偵測已啟動", false);
+                
                 predictLoop();
             } catch (err) {
-                statusDiv.innerText = "載入失敗，請檢查檔案或路徑";
-                console.error(err);
+                setStatus("模型載入失敗，請確認檔案是否存在", false);
+                console.error("Model loading error:", err);
                 startBtn.disabled = false;
             }
         }
 
         async function setupCamera(deviceId = null) {
             if (currentStream) currentStream.getTracks().forEach(t => t.stop());
-            const constraints = { video: { deviceId: deviceId ? { exact: deviceId } : undefined, facingMode: 'environment' } };
+            const constraints = { 
+                video: { 
+                    deviceId: deviceId ? { exact: deviceId } : undefined, 
+                    facingMode: 'environment', // 優先使用手機後置鏡頭
+                    width: { ideal: 1280 },
+                    height: { ideal: 720 }
+                } 
+            };
             currentStream = await navigator.mediaDevices.getUserMedia(constraints);
             video.srcObject = currentStream;
             return new Promise(res => video.onloadedmetadata = res);
         }
 
         async function populateCameraList() {
-            const devices = await navigator.mediaDevices.enumerateDevices();
-            const videoDevices = devices.filter(d => d.kind === 'videoinput');
-            cameraSelect.style.display = 'block';
-            cameraSelect.innerHTML = "";
-            videoDevices.forEach(d => {
-                const opt = document.createElement('option');
-                opt.value = d.deviceId;
-                opt.text = d.label || "攝影機";
-                cameraSelect.appendChild(opt);
-            });
+            try {
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const videoDevices = devices.filter(d => d.kind === 'videoinput');
+                cameraSelect.innerHTML = "";
+                videoDevices.forEach((d, i) => {
+                    const opt = document.createElement('option');
+                    opt.value = d.deviceId;
+                    opt.text = d.label || `攝影機 ${i + 1}`;
+                    cameraSelect.appendChild(opt);
+                });
+            } catch (e) {
+                console.warn("無法列舉攝影機:", e);
+            }
         }
 
         async function changeCamera() {
+            setStatus("切換攝影機中...", true);
             await setupCamera(cameraSelect.value);
             video.play();
+            setStatus("系統運作中 - AI 偵測已啟動", false);
         }
 
         async function predictLoop() {
             if (video.readyState === video.HAVE_ENOUGH_DATA && tfliteModel) {
-                canvas.width = video.videoWidth;
-                canvas.height = video.videoHeight;
+                
+                // 動態匹配 CSS object-fit 產生的實際繪製區域
+                if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+                    canvas.width = video.videoWidth;
+                    canvas.height = video.videoHeight;
+                }
 
                 const imgTensor = tf.tidy(() => {
-                    return tf.browser.fromPixels(video).resizeNearestNeighbor(inputShape).expandDims(0).toFloat().div(255.0);
+                    return tf.browser.fromPixels(video)
+                        .resizeNearestNeighbor(inputShape)
+                        .expandDims(0)
+                        .toFloat()
+                        .div(255.0); 
                 });
 
-                const result = await tfliteModel.predict(imgTensor);
+                let result;
+                try {
+                    result = await tfliteModel.predict(imgTensor);
+                } catch(e) {
+                    console.error("預測失敗:", e);
+                    imgTensor.dispose();
+                    return;
+                }
+
                 ctx.clearRect(0, 0, canvas.width, canvas.height);
-                const outputs = Object.values(result);
+                
+                const outputs = Array.isArray(result) ? result : Object.values(result);
                 const format = formatSelect.value;
+                let isDetected = false;
 
                 if (format === 'mediapipe' && outputs.length >= 3) {
-                    // MediaPipe SSD 解析: [ymin, xmin, ymax, xmax]
-                    const boxes = outputs[0].dataSync();
-                    const classes = outputs[1].dataSync();
-                    const scores = outputs[2].dataSync();
+                    let boxesT, classesT, scoresT;
+                    outputs.forEach(t => {
+                        if (t.shape.length === 3 && t.shape[2] === 4) boxesT = t;
+                        else if (t.shape.length === 2 && t.shape[1] > 0 && !scoresT) scoresT = t;
+                        else if (t.shape.length === 2 && t.shape[1] > 0 && scoresT) classesT = t;
+                    });
+                    
+                    if(!boxesT || !classesT || !scoresT) {
+                        boxesT = outputs[0]; classesT = outputs[1]; scoresT = outputs[2];
+                    }
+
+                    const boxes = boxesT.dataSync();
+                    const classes = classesT.dataSync();
+                    const scores = scoresT.dataSync();
+                    
                     for (let i = 0; i < scores.length; i++) {
-                        if (scores[i] > 0.45) {
+                        if (scores[i] > 0.22) { // 預設門檻 0.22
                             const ymin = boxes[i*4], xmin = boxes[i*4+1], ymax = boxes[i*4+2], xmax = boxes[i*4+3];
                             drawUI(xmin * canvas.width, ymin * canvas.height, (xmax-xmin)*canvas.width, (ymax-ymin)*canvas.height, classes[i], scores[i]);
+                            isDetected = true;
                         }
                     }
-                } else if (format === 'yolo') {
-                    // YOLO 解析 (假設輸出 [1, 5+N, 8400])
+                } else if (format === 'yolo' && outputs.length > 0) {
                     const data = outputs[0].dataSync();
                     const dims = outputs[0].shape[1];
                     const preds = outputs[0].shape[2];
-                    for (let i = 0; i < preds; i += 2) {
+                    for (let i = 0; i < preds; i++) {
                         let maxS = 0, cls = 0;
                         for (let c = 4; c < dims; c++) {
                             if (data[c*preds+i] > maxS) { maxS = data[c*preds+i]; cls = c-4; }
                         }
-                        if (maxS > 0.5) {
+                        if (maxS > 0.22) {
                             const cx = data[i], cy = data[preds+i], w = data[2*preds+i], h = data[3*preds+i];
                             drawUI((cx-w/2)*canvas.width, (cy-h/2)*canvas.height, w*canvas.width, h*canvas.height, cls, maxS);
+                            isDetected = true;
                         }
                     }
                 }
 
+                if (!isDetected) {
+                    setStatus("雷達掃描中... (未發現目標)", false);
+                }
+
                 imgTensor.dispose();
-                outputs.forEach(t => t.dispose());
+                if (result instanceof tf.Tensor) result.dispose();
+                else outputs.forEach(t => { if (t instanceof tf.Tensor) t.dispose(); });
             }
             requestAnimationFrame(predictLoop);
         }
 
+        // 充滿科技感的 UI 繪製
         function drawUI(x, y, w, h, id, score) {
-            ctx.strokeStyle = "#FF3300"; // 警示紅色
-            ctx.lineWidth = 4;
+            // 繪製外框
+            ctx.strokeStyle = "#00ffcc";
+            ctx.lineWidth = 3;
             ctx.strokeRect(x, y, w, h);
-            const label = classMap[Math.round(id)] || `未知物體 ${id}`;
-            const txt = `${label} ${Math.round(score*100)}%`;
-            ctx.fillStyle = "#FF3300";
-            ctx.font = "bold 20px Arial";
-            ctx.fillText(txt, x, y > 30 ? y - 10 : y + 25);
-            statusDiv.innerText = "偵測中: " + label;
+            
+            // 角落裝飾 (科幻風格)
+            const cornerSize = 15;
+            ctx.lineWidth = 5;
+            ctx.beginPath();
+            // 左上
+            ctx.moveTo(x, y + cornerSize); ctx.lineTo(x, y); ctx.lineTo(x + cornerSize, y);
+            // 右上
+            ctx.moveTo(x + w - cornerSize, y); ctx.lineTo(x + w, y); ctx.lineTo(x + w, y + cornerSize);
+            // 左下
+            ctx.moveTo(x, y + h - cornerSize); ctx.lineTo(x, y + h); ctx.lineTo(x + cornerSize, y + h);
+            // 右下
+            ctx.moveTo(x + w - cornerSize, y + h); ctx.lineTo(x + w, y + h); ctx.lineTo(x + w, y + h - cornerSize);
+            ctx.stroke();
+            
+            const label = classMap[Math.round(id)] || `未知目標 [${Math.round(id)}]`;
+            const txt = `⚠️ ${label} ${(score*100).toFixed(0)}%`;
+            
+            // 標籤背景
+            ctx.fillStyle = "rgba(0, 0, 0, 0.8)";
+            const textWidth = ctx.measureText(txt).width + 20;
+            ctx.fillRect(x, y > 35 ? y - 35 : y, textWidth, 35);
+            
+            // 標籤文字
+            ctx.fillStyle = "#00ffcc";
+            ctx.font = "bold 16px 'Inter', sans-serif";
+            ctx.fillText(txt, x + 10, y > 35 ? y - 12 : y + 24);
+            
+            setStatus(`🔥 鎖定目標: ${label}`, false);
         }
     </script>
 </body>

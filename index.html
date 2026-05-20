@@ -133,9 +133,39 @@
         .log-item.info { border-color: #00aaff; color: #bde0ff; }
         .log-item.warn { border-color: #ffaa00; color: #ffe6b3; }
         .log-item.error { border-color: #ff3333; color: #ffcccc; font-weight: bold; }
+
+        #cleanModeBtn {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.6);
+            border: 1px solid var(--primary);
+            color: var(--primary);
+            padding: 8px 16px;
+            border-radius: 20px;
+            z-index: 1001;
+            cursor: pointer;
+            font-weight: bold;
+            backdrop-filter: blur(5px);
+            transition: all 0.3s;
+            width: auto;
+            margin: 0;
+            display: none; /* 最初隱藏，啟動後顯示 */
+        }
+        #cleanModeBtn:hover {
+            background: var(--primary);
+            color: black;
+        }
+
+        .clean-mode #status,
+        .clean-mode #logContainer,
+        .clean-mode #controls {
+            display: none !important;
+        }
     </style>
 </head>
 <body>
+    <button id="cleanModeBtn" onclick="toggleCleanMode()">👁️ 隱藏介面</button>
     <div id="status">系統就緒</div>
     
     <!-- 浮動日誌視窗 -->
@@ -160,6 +190,11 @@
         <div style="font-size: 12px; color: #888; margin-bottom: 10px;">高階 API - 自動解碼 19125 候選框</div>
         <input type="file" id="modelUpload" accept=".tflite">
         <select id="cameraSelect"><option value="">正在載入鏡頭...</option></select>
+        <select id="delegateSelect" onchange="if(window.isAppRunning) restartWithDelegate(this.value)">
+            <option value="AUTO">運算模式: 自動切換 (推薦)</option>
+            <option value="GPU">運算模式: 強制 GPU</option>
+            <option value="CPU">運算模式: 強制 CPU</option>
+        </select>
         <button id="startBtn" onclick="startApp()">啟動高階偵測系統</button>
     </div>
 
@@ -182,7 +217,9 @@
         let isProcessing = false;
         let crashCount = 0;
         let isRestartingDetector = false;
-        let useGPU = true;
+        let delegateMode = "AUTO";
+        let fallbackToCPU = false;
+        window.isAppRunning = false;
         const defaultModelSource = './model.tflite';
 
         // 日誌處理函式
@@ -211,6 +248,35 @@
 
         window.clearLogs = function () {
             logContent.innerHTML = '';
+        }
+
+        window.restartWithDelegate = async function(mode) {
+            delegateMode = mode;
+            fallbackToCPU = false;
+            if (detector) {
+                window.addLog(`手動切換運算模式至 ${mode}，正在重啟引擎...`, "info");
+                isRestartingDetector = true;
+                try {
+                    await setupDetector();
+                    crashCount = 0;
+                } catch(err) {
+                    window.addLog(`切換模式失敗: ` + err.message, "error");
+                } finally {
+                    isRestartingDetector = false;
+                }
+            }
+        }
+
+        window.toggleCleanMode = function() {
+            document.body.classList.toggle('clean-mode');
+            const btn = document.getElementById('cleanModeBtn');
+            if (document.body.classList.contains('clean-mode')) {
+                btn.innerText = '👁️ 顯示介面';
+                btn.style.opacity = '0.5';
+            } else {
+                btn.innerText = '👁️ 隱藏介面';
+                btn.style.opacity = '1';
+            }
         }
 
         // 精準依據模型 labels.txt 內 Unicode 排序編排的中文對照表 (0-based)
@@ -285,7 +351,11 @@
         initCameras();
 
         async function setupDetector() {
-            window.addLog(`正在初始化 MediaPipe 偵測引擎 (${useGPU ? 'GPU' : 'CPU'} 模式)...`, "info");
+            let targetDelegate = "CPU";
+            if (delegateMode === "GPU") targetDelegate = "GPU";
+            else if (delegateMode === "AUTO") targetDelegate = fallbackToCPU ? "CPU" : "GPU";
+
+            window.addLog(`正在初始化 MediaPipe 偵測引擎 (${targetDelegate} 模式)...`, "info");
             statusIndicator.className = 'status-warn';
             if (detector) {
                 try { detector.close(); } catch(e) {}
@@ -299,16 +369,19 @@
             
             try {
                 detector = await ObjectDetector.createFromOptions(vision, {
-                    baseOptions: { modelAssetPath: modelSource, delegate: useGPU ? "GPU" : "CPU" },
+                    baseOptions: { modelAssetPath: modelSource, delegate: targetDelegate },
                     scoreThreshold: 0.1,
                     runningMode: "VIDEO"
                 });
                 window.addLog("偵測引擎載入成功！", "info");
                 statusIndicator.className = 'status-running';
+                if (targetDelegate === "GPU" && delegateMode === "AUTO") {
+                    fallbackToCPU = false;
+                }
             } catch (error) {
-                if (useGPU) {
-                    window.addLog("GPU 模式初始化失敗，自動降級至 CPU 模式...", "warn");
-                    useGPU = false;
+                if (delegateMode === "AUTO" && !fallbackToCPU) {
+                    window.addLog("AUTO: GPU 模式初始化失敗，自動降級至 CPU 模式...", "warn");
+                    fallbackToCPU = true;
                     await setupDetector(); // 遞迴使用 CPU 模式重試
                 } else {
                     throw error;
@@ -317,7 +390,11 @@
         }
 
         window.startApp = async function() {
+            window.isAppRunning = true;
+            delegateMode = document.getElementById('delegateSelect').value;
+            fallbackToCPU = false;
             document.getElementById('startBtn').style.display = 'none';
+            document.getElementById('cleanModeBtn').style.display = 'block';
             statusEl.innerText = "正在載入高階引擎...";
             
             try {
@@ -398,9 +475,9 @@
                         
                         if (crashCount >= 3 && !isRestartingDetector) {
                             isRestartingDetector = true;
-                            if (useGPU) {
-                                window.addLog("GPU 模式連續異常，降級至 CPU 模式重啟...", "warn");
-                                useGPU = false;
+                            if (delegateMode === "AUTO" && !fallbackToCPU) {
+                                window.addLog("AUTO: GPU 模式連續異常，降級至 CPU 模式重啟...", "warn");
+                                fallbackToCPU = true;
                             } else {
                                 window.addLog("連續異常，自動重啟偵測引擎...", "warn");
                             }
